@@ -4,7 +4,6 @@ import {
   FileText, 
   MapPin, 
   Calendar, 
-  //Filter,
   Search,
   AlertTriangle,
   Clock,
@@ -12,15 +11,13 @@ import {
   User,
   Eye,
   Edit,
-  //MessageSquare,
-  //Camera,
-  //Upload
+  UserCheck
 } from 'lucide-react';
 import { useComplaints } from '../../contexts/ComplaintContext';
 import { useAuth } from '../../contexts/AuthContext';
 import StatusBadge from '../../components/common/StatusBadge';
 import { ComplaintStatus, ComplaintCategory, Priority, Complaint } from '../../types';
-import axios from 'axios';
+
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center h-64">
     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
@@ -28,62 +25,93 @@ const LoadingSpinner = () => (
 );
 
 const ComplaintManagement: React.FC = () => {
-  console.log('Rendering ComplaintManagement component'); // Debug log
-  const { complaints = [], updateComplaintStatus, addComplaintUpdate, isLoading, refetchComplaints } = useComplaints();
+  const { updateComplaintStatus, addComplaintUpdate, isLoading } = useComplaints();
   const { user } = useAuth();
   
-  // Debug logs
-  console.log('Complaints from context:', complaints);
-  console.log('Current user:', user);
-
-  useEffect(() => {
-    console.log('ComplaintManagement component mounted');
-    console.log('User role:', user?.role);
-
-    if (!user) {
-      console.log('No user found, redirecting to login');
-      return;
-    }
-
-    refetchComplaints()
-      .then(() => console.log('Complaints refetched successfully'))
-      .catch((error) => console.error('Error refetching complaints:', error));
-  }, [user, refetchComplaints]);
-  
+  const [allComplaints, setAllComplaints] = useState<Complaint[]>([]);
+  const [loadingComplaints, setLoadingComplaints] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<ComplaintStatus | 'all'>('all');
   const [categoryFilter, setCategoryFilter] = useState<ComplaintCategory | 'all'>('all');
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all');
   const [showEmergencyOnly, setShowEmergencyOnly] = useState(false);
+  const [assignmentFilter, setAssignmentFilter] = useState<'all' | 'assigned_to_me' | 'unassigned'>('all');
   const [selectedComplaint, setSelectedComplaint] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState('');
   const [newStatus, setNewStatus] = useState<ComplaintStatus>('under_review');
-  const [allComplaints, setAllComplaints] = useState<Complaint[]>([]);
 
-  // Fetch all complaints from the new backend endpoint
+  // Fetch all complaints from the backend
   useEffect(() => {
     const fetchAllComplaints = async () => {
+      setLoadingComplaints(true);
       try {
-        console.log('Fetching all complaints...');
-        const response = await axios.get('/api/complaints/all');
-        console.log('API response:', response.data);
-        setAllComplaints(response.data.data || []);
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        if (!user || !user.token) {
+          console.log('No authenticated user found');
+          return;
+        }
+
+        const response = await fetch('http://localhost:5000/api/v1/complaints', {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch complaints: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.success && data.data?.complaints) {
+          // Transform the data to match our Complaint interface
+          const transformedComplaints = data.data.complaints.map((complaint: any) => ({
+            id: complaint._id,
+            _id: complaint._id,
+            title: complaint.title,
+            description: complaint.description,
+            category: complaint.category,
+            status: complaint.status,
+            priority: complaint.priority,
+            location: {
+              type: complaint.location.type,
+              coordinates: complaint.location.coordinates,
+              address: complaint.location.address,
+              city: complaint.location.city,
+              region: complaint.location.region,
+              latitude: complaint.location.coordinates[1],
+              longitude: complaint.location.coordinates[0]
+            },
+            submittedBy: complaint.submittedBy?._id || complaint.submittedBy,
+            assignedTo: complaint.assignedTo?._id || complaint.assignedTo,
+            attachments: complaint.attachments || [],
+            isEmergency: complaint.isEmergency,
+            createdAt: new Date(complaint.createdAt),
+            updatedAt: new Date(complaint.updatedAt),
+            resolvedAt: complaint.resolvedAt ? new Date(complaint.resolvedAt) : undefined,
+            rating: complaint.rating,
+            feedback: complaint.feedback,
+            updates: complaint.updates || [],
+            department: complaint.department?.name || complaint.department,
+            departmentId: complaint.department?._id || complaint.department
+          }));
+          
+          setAllComplaints(transformedComplaints);
+          console.log('Fetched all complaints:', transformedComplaints.length);
+        }
       } catch (error) {
-        console.error('Error fetching all complaints:', error);
+        console.error('Error fetching complaints:', error);
+      } finally {
+        setLoadingComplaints(false);
       }
     };
 
     fetchAllComplaints();
   }, []);
 
-  useEffect(() => {
-    console.log('All complaints fetched:', allComplaints);
-  }, [allComplaints]);
-
-  // Filter complaints assigned to this provider
-  const assignedComplaints = complaints.filter(c => c.assignedTo === user?.id || !c.assignedTo);
-  
-  const filteredComplaints = assignedComplaints.filter(complaint => {
+  // Filter complaints based on assignment and other filters
+  const filteredComplaints = allComplaints.filter(complaint => {
     const matchesSearch = complaint.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          complaint.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          complaint.location.address.toLowerCase().includes(searchTerm.toLowerCase());
@@ -92,36 +120,75 @@ const ComplaintManagement: React.FC = () => {
     const matchesPriority = priorityFilter === 'all' || complaint.priority === priorityFilter;
     const matchesEmergency = !showEmergencyOnly || complaint.isEmergency;
     
-    return matchesSearch && matchesStatus && matchesCategory && matchesPriority && matchesEmergency;
+    // Assignment filter
+    let matchesAssignment = true;
+    if (assignmentFilter === 'assigned_to_me') {
+      matchesAssignment = complaint.assignedTo === user?.id;
+    } else if (assignmentFilter === 'unassigned') {
+      matchesAssignment = !complaint.assignedTo;
+    }
+    
+    return matchesSearch && matchesStatus && matchesCategory && matchesPriority && matchesEmergency && matchesAssignment;
   });
 
-  useEffect(() => {
-    if (filteredComplaints.length > 0) {
-      console.log('Complaints successfully fetched and displayed in Complaint Management tab');
-    }
-  }, [filteredComplaints.length]);
+  // Calculate stats based on all complaints
+  const assignedToMe = allComplaints.filter(c => c.assignedTo === user?.id);
+  const unassignedComplaints = allComplaints.filter(c => !c.assignedTo);
+  const emergencyComplaints = allComplaints.filter(c => c.isEmergency && !['resolved', 'closed'].includes(c.status));
 
-  const handleStatusUpdate = (complaintId: string, status: ComplaintStatus, message?: string) => {
-    updateComplaintStatus(complaintId, status, message);
-    setSelectedComplaint(null);
-    setUpdateMessage('');
+  const handleStatusUpdate = async (complaintId: string, status: ComplaintStatus, message?: string) => {
+    try {
+      await updateComplaintStatus(complaintId, status, message);
+      // Refresh the complaints list
+      const updatedComplaints = allComplaints.map(c => 
+        c.id === complaintId ? { ...c, status } : c
+      );
+      setAllComplaints(updatedComplaints);
+      setSelectedComplaint(null);
+      setUpdateMessage('');
+    } catch (error) {
+      console.error('Error updating complaint status:', error);
+    }
   };
 
   const handleAddUpdate = async (complaintId: string, message: string) => {
     try {
       await addComplaintUpdate(complaintId, message);
-    setSelectedComplaint(null);
-    setUpdateMessage('');
+      setSelectedComplaint(null);
+      setUpdateMessage('');
     } catch (error) {
       console.error('Error adding update:', error);
-      // You might want to show an error message to the user here
     }
   };
 
-  // Safe check for allComplaints
-  if (!Array.isArray(allComplaints)) {
-    console.error('allComplaints is not an array:', allComplaints);
-    return <p>Error: Unable to load complaints.</p>;
+  const handleAssignToMe = async (complaintId: string) => {
+    try {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      if (!user || !user.token) return;
+
+      const response = await fetch(`http://localhost:5000/api/v1/complaints/${complaintId}/assign`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ assignedTo: user.id })
+      });
+
+      if (response.ok) {
+        // Update local state
+        const updatedComplaints = allComplaints.map(c => 
+          c.id === complaintId ? { ...c, assignedTo: user.id, status: 'under_review' as ComplaintStatus } : c
+        );
+        setAllComplaints(updatedComplaints);
+      }
+    } catch (error) {
+      console.error('Error assigning complaint:', error);
+    }
+  };
+
+  if (loadingComplaints) {
+    return <LoadingSpinner />;
   }
 
   return (
@@ -129,7 +196,7 @@ const ComplaintManagement: React.FC = () => {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Complaint Management</h1>
-        <p className="text-gray-600 mt-2">Manage and resolve assigned complaints</p>
+        <p className="text-gray-600 mt-2">View and manage all citizen complaints in the system</p>
       </div>
 
       {/* Stats Overview */}
@@ -140,8 +207,20 @@ const ComplaintManagement: React.FC = () => {
               <FileText className="w-6 h-6 text-blue-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm text-gray-600">Total Assigned</p>
-              <p className="text-2xl font-semibold text-gray-900">{assignedComplaints.length}</p>
+              <p className="text-sm text-gray-600">Total Complaints</p>
+              <p className="text-2xl font-semibold text-gray-900">{allComplaints.length}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="flex items-center">
+            <div className="p-2 bg-green-50 rounded-lg">
+              <UserCheck className="w-6 h-6 text-green-600" />
+            </div>
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Assigned to Me</p>
+              <p className="text-2xl font-semibold text-gray-900">{assignedToMe.length}</p>
             </div>
           </div>
         </div>
@@ -152,24 +231,8 @@ const ComplaintManagement: React.FC = () => {
               <Clock className="w-6 h-6 text-orange-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm text-gray-600">Pending</p>
-              <p className="text-2xl font-semibold text-gray-900">
-                {assignedComplaints.filter(c => ['submitted', 'under_review', 'in_progress'].includes(c.status)).length}
-              </p>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <div className="flex items-center">
-            <div className="p-2 bg-green-50 rounded-lg">
-              <CheckCircle className="w-6 h-6 text-green-600" />
-            </div>
-            <div className="ml-4">
-              <p className="text-sm text-gray-600">Resolved</p>
-              <p className="text-2xl font-semibold text-gray-900">
-                {assignedComplaints.filter(c => c.status === 'resolved').length}
-              </p>
+              <p className="text-sm text-gray-600">Unassigned</p>
+              <p className="text-2xl font-semibold text-gray-900">{unassignedComplaints.length}</p>
             </div>
           </div>
         </div>
@@ -181,9 +244,7 @@ const ComplaintManagement: React.FC = () => {
             </div>
             <div className="ml-4">
               <p className="text-sm text-gray-600">Emergencies</p>
-              <p className="text-2xl font-semibold text-gray-900">
-                {assignedComplaints.filter(c => c.isEmergency).length}
-              </p>
+              <p className="text-2xl font-semibold text-gray-900">{emergencyComplaints.length}</p>
             </div>
           </div>
         </div>
@@ -191,7 +252,7 @@ const ComplaintManagement: React.FC = () => {
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow-sm p-6 mb-8">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Search</label>
             <div className="relative">
@@ -204,6 +265,19 @@ const ComplaintManagement: React.FC = () => {
                 className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Assignment</label>
+            <select
+              value={assignmentFilter}
+              onChange={(e) => setAssignmentFilter(e.target.value as 'all' | 'assigned_to_me' | 'unassigned')}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="all">All Complaints</option>
+              <option value="assigned_to_me">Assigned to Me</option>
+              <option value="unassigned">Unassigned</option>
+            </select>
           </div>
           
           <div>
@@ -258,7 +332,7 @@ const ComplaintManagement: React.FC = () => {
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Emergency</label>
-            <label className="flex items-center">
+            <label className="flex items-center mt-2">
               <input
                 type="checkbox"
                 checked={showEmergencyOnly}
@@ -273,7 +347,7 @@ const ComplaintManagement: React.FC = () => {
 
       {/* Complaints List */}
       <div className="space-y-6">
-        {isLoading ? (
+        {isLoading || loadingComplaints ? (
           <LoadingSpinner />
         ) : filteredComplaints.length > 0 ? (
           filteredComplaints.map((complaint) => (
@@ -289,6 +363,17 @@ const ComplaintManagement: React.FC = () => {
                           Emergency
                         </span>
                       )}
+                      {complaint.assignedTo === user?.id && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                          <UserCheck className="w-3 h-3 mr-1" />
+                          Assigned to You
+                        </span>
+                      )}
+                      {!complaint.assignedTo && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                          Unassigned
+                        </span>
+                      )}
                     </div>
                     <p className="text-gray-600 mb-3">{complaint.description}</p>
                     <div className="flex items-center space-x-4 text-sm text-gray-500">
@@ -302,7 +387,7 @@ const ComplaintManagement: React.FC = () => {
                       </span>
                       <span className="flex items-center">
                         <User className="w-4 h-4 mr-1" />
-                        ID: {complaint.id}
+                        ID: {complaint.id.slice(-8)}
                       </span>
                     </div>
                   </div>
@@ -365,13 +450,26 @@ const ComplaintManagement: React.FC = () => {
                       <Eye className="w-4 h-4 mr-1" />
                       View Details
                     </Link>
-                    <button
-                      onClick={() => setSelectedComplaint(selectedComplaint === complaint.id ? null : complaint.id)}
-                      className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-                    >
-                      <Edit className="w-4 h-4 mr-1" />
-                      Update Status
-                    </button>
+                    
+                    {!complaint.assignedTo && (
+                      <button
+                        onClick={() => handleAssignToMe(complaint.id)}
+                        className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 transition-colors"
+                      >
+                        <UserCheck className="w-4 h-4 mr-1" />
+                        Assign to Me
+                      </button>
+                    )}
+                    
+                    {(complaint.assignedTo === user?.id || user?.role === 'admin') && (
+                      <button
+                        onClick={() => setSelectedComplaint(selectedComplaint === complaint.id ? null : complaint.id)}
+                        className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                      >
+                        <Edit className="w-4 h-4 mr-1" />
+                        Update Status
+                      </button>
+                    )}
                   </div>
                   <div className="text-sm text-gray-500">
                     Last updated: {new Date(complaint.updatedAt).toLocaleDateString()}
@@ -437,52 +535,42 @@ const ComplaintManagement: React.FC = () => {
             <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No complaints found</h3>
             <p className="text-gray-500">
-              {searchTerm || statusFilter !== 'all' || categoryFilter !== 'all' || priorityFilter !== 'all' || showEmergencyOnly
+              {searchTerm || statusFilter !== 'all' || categoryFilter !== 'all' || priorityFilter !== 'all' || showEmergencyOnly || assignmentFilter !== 'all'
                 ? "No complaints match your current filters."
-                : "No complaints have been assigned to you yet."
+                : "No complaints are available in the system."
               }
             </p>
           </div>
         )}
       </div>
 
-      {/* Complaints Table */}
-      <div className="bg-white rounded-lg shadow-sm p-6 mt-8">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">All Complaints</h2>
-        {allComplaints.length === 0 ? (
-          <p className="text-gray-600">No complaints available.</p>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Title
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Description
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Priority
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {allComplaints.map((complaint) => (
-                <tr key={complaint._id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{complaint.title}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{complaint.description}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    <StatusBadge status={complaint.status} />
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{complaint.priority}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {/* Summary Statistics */}
+      <div className="mt-8 bg-white rounded-lg shadow-sm p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Complaint Overview</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-blue-600">{allComplaints.length}</div>
+            <div className="text-sm text-gray-600">Total Complaints</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-green-600">
+              {allComplaints.filter(c => c.status === 'resolved').length}
+            </div>
+            <div className="text-sm text-gray-600">Resolved</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-orange-600">
+              {allComplaints.filter(c => ['submitted', 'under_review', 'in_progress'].includes(c.status)).length}
+            </div>
+            <div className="text-sm text-gray-600">Active</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-purple-600">
+              {Math.round(((allComplaints.filter(c => c.status === 'resolved').length / allComplaints.length) * 100) || 0)}%
+            </div>
+            <div className="text-sm text-gray-600">Resolution Rate</div>
+          </div>
+        </div>
       </div>
     </div>
   );
