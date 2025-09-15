@@ -26,6 +26,7 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import UserManagement from './pages/admin/UserManagement';
 import DepartmentManagement from './pages/admin/DepartmentManagement';
 import SystemAnalytics from './pages/admin/SystemAnalytics';
+import IssueManagement from './pages/admin/IssueManagement';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({ 
   children, 
@@ -153,6 +154,11 @@ const AppRoutes: React.FC = () => {
         <Route path="/admin/departments" element={
           <ProtectedRoute allowedRoles={['admin']}>
             <DepartmentManagement />
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/issue-management" element={
+          <ProtectedRoute allowedRoles={['admin']}>
+            <IssueManagement />
           </ProtectedRoute>
         } />
         <Route path="/admin/analytics" element={
